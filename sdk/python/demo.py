@@ -428,7 +428,7 @@ class OSDDemo:
         opts = 0
         for ii in range(0, self.osd.info.gridRows):
             s = 'This is line {}'.format(ii+1).upper()
-            self.osd.draw_grid_str((self.osd.info.gridColumns - len(s)) / 2, ii, s, opts)
+            self.osd.draw_grid_str(int((self.osd.info.gridColumns - len(s)) / 2), ii, s, opts)
         self.commit()
 
     def draw_grid_lines_full(self):
@@ -441,22 +441,36 @@ class OSDDemo:
                     s = '+' + s + '+'
                 else:
                     s = s + '-'
-            self.osd.draw_grid_str((self.osd.info.gridColumns - len(s)) / 2, ii, s, opts)
+            self.osd.draw_grid_str(int((self.osd.info.gridColumns - len(s)) / 2), ii, s, opts)
         self.commit()
 
 def main():
-    import argparse
+    from dataclasses import dataclass
+    from enum import Enum
 
-    parser = argparse.ArgumentParser()
+    class draw_choices(Enum):
+        logo = "logo"
+        ahi = "ahi"
+        ahi_light = "ahi_light"
+        compass = "compass"
+        foo = "foo"
+        home = "home"
+        triangle = "triangle"
+        rect = "rect"
+        grid = "grid"
+        grid_lines = "grid_lines"
+        grid_lines_full = "grid_lines_full"
 
-    draw_choices = ('logo', 'ahi', 'ahi_light', 'compass', 'foo', 'home', 'triangle', 'rect', 'grid', 'grid_lines', 'grid_lines_full')
+    @dataclass
+    class Arguments:
+        trace: bool = True #Print all data sent/received
+        profile_at: str | None = None #Screen point to draw profiling information at
+        once: bool = False #Draw the element once at exit
+        port: str = "COM7" #OSD serial port
+        draw: draw_choices = "grid_lines_full" #Demo element to draw (draw_choices)
 
-    parser.add_argument('--trace', default=False, action='store_true', dest='trace', help='Print all data sent/received')
-    parser.add_argument('--profile-at', dest='profile_at', type=str, help='Screen point to draw profiling information at')
-    parser.add_argument('--once', default=False, action='store_true', dest='once', help='Draw the element once at exit')
-    parser.add_argument('port', type=str, help='OSD serial port')
-    parser.add_argument('draw', type=str, help='Demo element to draw', choices=draw_choices)
-    args = parser.parse_args()
+
+    args = Arguments()
 
     osd = frskyosd.OSD(args.port, trace=args.trace, profile_at=args.profile_at)
     if not osd.connect():
@@ -465,6 +479,9 @@ def main():
     demo = OSDDemo(osd)
 
     draw = getattr(demo, 'draw_' + args.draw)
+
+    width = 10*12
+    height = 18*7
 
     osd.drawing_reset()
     osd.clear_screen()

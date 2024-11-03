@@ -286,7 +286,7 @@ class SerialConn:
 
     @classmethod
     def accepts(cls, port):
-        if port.lower().startswith('COM'):
+        if port.upper().startswith('COM'):
             # Windows
             return True
         if os.path.abspath(port).startswith('/dev/'):
