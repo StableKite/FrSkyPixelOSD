@@ -4,7 +4,7 @@ from subprocess import Popen, PIPE
 from setuptools import setup, find_packages
 from os.path import exists, dirname, realpath, join
 
-version_file = "sdk/python/frskyosd/version.py"
+version_file = "frskyosd/version.py"
 
 
 def readme():
@@ -55,7 +55,7 @@ __gitsha__ = '{}'
 version_info = ({})
 """
     sha = get_hash()
-    with open("sdk/python/VERSION.txt", 'r') as f:
+    with open("VERSION.txt", 'r') as f:
         SHORT_VERSION = f.read().strip()
     VERSION_INFO = ", ".join([x if x.isdigit() else f'"{x}"' for x in SHORT_VERSION.split('.')])
 
@@ -69,7 +69,7 @@ def get_version():
         exec(compile(f.read(), version_file, 'exec'))
     return locals()['__version__']
 
-def get_requirements(filename = "sdk/python/requirements.txt"):
+def get_requirements(filename = "requirements.txt"):
     here = dirname(realpath(__file__))
     with open(join(here, filename), 'r') as f:
         requires = [line.replace('\n', '') for line in f.readlines()]
