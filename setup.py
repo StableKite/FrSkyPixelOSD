@@ -87,7 +87,7 @@ if __name__ == "__main__":
         long_description = readme(),
         long_description_content_type = "text/markdown",
         packages = find_packages(include = [
-            "sdk/python/frskyosd*"
+            "frskyosd*"
         ]),
         install_requires = get_requirements(),
         zip_safe = False
