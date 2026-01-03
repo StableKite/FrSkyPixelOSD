@@ -1,12 +1,12 @@
-import binascii
-import collections
-import os
-import socket
-import struct
-import sys
-import time
-
-import serial
+from typing import Optional, List, Tuple, Dict, Any, Protocol, Union, Sequence
+from binascii import crc32
+from os.path import abspath
+from socket import socket, AF_INET, SOCK_STREAM
+from struct import pack, unpack
+from sys import version_info
+from time import sleep
+from enum import IntEnum
+from serial import Serial
 
 BAUDRATE = 115200
 
@@ -19,7 +19,7 @@ def grid_size_to_pixels(gw, gh):
 # For initial bootloader version, just cosmetic
 _ALLOW_WORKAROUND = True
 
-class CMD:
+class CMD(IntEnum):
     ERROR = 0
 
     INFO = 1
@@ -99,7 +99,7 @@ class CMD:
     VM_LOOKUP_SYMBOL = 154              # API2
     VM_EXEC = 155                       # API2
 
-class COLOR:
+class COLOR(IntEnum):
     BLACK = 0
     TRANSPARENT = 1
     WHITE = 2
@@ -108,19 +108,19 @@ class COLOR:
     _MIN = BLACK
     _MAX = GRAY
 
-class OUTLINE:
+class OUTLINE(IntEnum):
     NONE = 0
     TOP = 1 << 0
     RIGHT = 1 << 1
     BOTTOM = 1 << 2
     LEFT = 1 << 3
 
-class BITMAP_OPTS:
+class BITMAP_OPTS(IntEnum):
     INVERSE = 1 << 0
     SOLID_BG = 1 << 1
     ERASE_TRANSPARENT = 1 << 2
 
-class WIDGETS:
+class WIDGETS(IntEnum):
     AHI = 0
     AHI_STYLE_STAIRCASE = 0
     AHI_STYLE_LINE = 1
@@ -146,16 +146,16 @@ FLASH_WRITE_END = (2 << 31) - 1
 MAX_SEND_BUFFER_SIZE = 254
 
 def _int_as_bytes(i):
-    return struct.pack('B', i)
+    return pack('B', i)
 
-def _bytes_as_ints(b):
-    values = []
+def _bytes_as_ints(b: bytes | bytearray):
+    values: List[int] = []
     while len(b) > 0:
-        values.append(struct.unpack('B', b[:1])[0])
+        values.append(unpack('B', b[:1])[0])
         b = b[1:]
     return values
 
-def _bytes_have_prefix(b, prefix):
+def _bytes_have_prefix(b: List[str | bytes | bytearray], prefix):
     for ii, v in enumerate(prefix):
         bb = b[ii]
         if isinstance(bb, str):
@@ -165,19 +165,19 @@ def _bytes_have_prefix(b, prefix):
             return False
     return True
 
-def _str_to_bytes(s):
+def _str_to_bytes(s: str):
     if bytes is str:
         # Python 2
         return s
     # Python 3
     return bytes(s, 'ascii')
 
-def _format_payload(p):
+def _format_payload(p: bytes | bytearray | str):
     values = None
     if isinstance(p, bytearray):
         values = p
     elif isinstance(p, str):
-        values = [struct.unpack('B', v)[0] for v in p]
+        values = [unpack('B', v)[0] for v in p]
     elif isinstance(p, bytes):
         values = p
     if values:
@@ -192,7 +192,7 @@ class Unit(object):
         self.divided_symbol = divided_symbol
 
 class Response(object):
-    def __init__(self, cmd, payload):
+    def __init__(self, cmd: CMD, payload: bytes | bytearray):
         self.cmd = cmd
         self.payload = payload
 
@@ -202,30 +202,30 @@ class Response(object):
     def _payload_str(self):
         return '{} bytes = {}'.format(len(self.payload), _format_payload(self.payload))
 
-    def byte_at(self, idx):
+    def byte_at(self, idx: int):
         return _bytes_as_ints(self.payload)[idx]
 
     @classmethod
-    def decode(cls, cmd, payload):
+    def decode(cls, cmd: CMD, payload: bytes | bytearray):
         rcls = _response_cls.get(cmd)
         if rcls:
             return rcls(cmd, payload)
         return cls(cmd, payload)
 
 class ResponseError(Response):
-    def __init__(self, cmd, payload):
+    def __init__(self, cmd: CMD, payload: bytes | bytearray):
         super(ResponseError, self).__init__(cmd, payload)
-        self.request_cmd, self.error_code = struct.unpack('<Bb', payload)
+        self.request_cmd, self.error_code = unpack('<Bb', payload)
 
     def _payload_str(self):
         return 'in response to {}, code {}'.format(self.request_cmd, self.error_code)
 
 class ResponseInfo(Response):
-    def __init__(self, cmd, payload):
+    def __init__(self, cmd: CMD, payload: bytes | bytearray):
         super(ResponseInfo, self).__init__(cmd, payload)
         if _bytes_have_prefix(payload, 'AGH'):
             self.is_bootloader = False
-            values = (struct.unpack('<BBBBBHHBBHB', payload[3:]))
+            values = (unpack('<BBBBBHHBBHB', payload[3:]))
         elif len(payload) == 1 and _bytes_have_prefix(payload, 'B'):
             self.is_bootloader = True
             values = [0] * 11
@@ -250,9 +250,9 @@ class ResponseInfo(Response):
         return (self.major, self.minor, self.patch)
 
 class ResponseWriteFlash(Response):
-    def __init__(self, cmd, payload):
+    def __init__(self, cmd: CMD, payload: bytes | bytearray):
         super(ResponseWriteFlash, self).__init__(cmd, payload)
-        self.addr = struct.unpack('<L', payload)[0]
+        self.addr = unpack('<L', payload)[0]
 
     def _payload_str(self):
         return '{:#08x}'.format(self.addr)
@@ -265,17 +265,31 @@ _response_cls = {
 
 class RemoteResponseError(Exception):
     """Raised when the OSD returns an error over the protocol"""
-    def __init__(self, resp, message=None):
+    def __init__(self, resp, message = None):
         message = message or resp.__str__()
         super(RemoteResponseError, self).__init__(message)
         self.resp = resp
         self.message = message
 
-class SerialConn:
-    def __init__(self, port, baudrate):
-        self._conn = serial.Serial(port, baudrate)
+class IO(Protocol):
+    """
+    Serial input output protocol
+    """
 
-    def write(self, b):
+    def write(self, b: Union[bytes, bytearray]) -> Optional[int]:
+        ...
+
+    def read(self) -> Union[bytes, bytearray]:
+        ...
+
+    def close(self) -> None:
+        ...
+
+class SerialConn:
+    def __init__(self, port: Optional[str], baudrate: int):
+        self._conn = Serial(port, baudrate)
+
+    def write(self, b: bytes | bytearray):
         return self._conn.write(b)
 
     def read(self):
@@ -285,22 +299,22 @@ class SerialConn:
         return self._conn.close()
 
     @classmethod
-    def accepts(cls, port):
+    def accepts(cls, port: str):
         if port.upper().startswith('COM'):
             # Windows
             return True
-        if os.path.abspath(port).startswith('/dev/'):
+        if abspath(port).startswith('/dev/'):
             # Unix
             return True
         return False
 
 class TCPConn:
-    def __init__(self, loc):
+    def __init__(self, loc: str):
         host, port = loc.split(':')
-        self._conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._conn = socket(AF_INET, SOCK_STREAM)
         self._conn.connect((host, int(port)))
 
-    def write(self, b):
+    def write(self, b: bytes | bytearray):
         self._conn.send(b)
 
     def read(self):
@@ -310,30 +324,30 @@ class TCPConn:
         return self._conn.close()
 
     @classmethod
-    def accepts(cls, loc):
+    def accepts(cls, loc: str):
         return ':' in loc
 
 class OSD:
 
-    def __init__(self, port, **kwargs):
-        self.conn = None
+    def __init__(self, port: str, **kwargs: Any):
+        self.conn: Optional[IO] = None
         self.send_buffer = bytearray()
         self.recv_buffer = []
         self.port = port
         self.trace = kwargs.get('trace', False)
         self.debug = self.trace or kwargs.get('debug', False)
-        self.baudrate = kwargs.get('baudrate', BAUDRATE)
+        self.baudrate: int = kwargs.get('baudrate', BAUDRATE)
         self.msp_passthrough = kwargs.get('msp_passthrough', False)
         profile_at = kwargs.get('profile_at')
         if profile_at is not None:
-            if isinstance(profile_at, basestring):
+            if isinstance(profile_at, str):
                 parts = profile_at.split(',')
                 if len(parts) != 2:
                     raise ValueError('profile_at string must be in the form int,int, not "{}"'.format(profile_at))
                 profile_at = (int(parts[0]), int(parts[1]))
             elif not isinstance(profile_at, list) and not isinstance(profile_at, tuple):
                 raise ValueError('profile_at must be a tuple, list or a string in the form "X,Y"')
-        self.profile_at = profile_at
+        self.profile_at: Optional[Tuple[int, int]] = profile_at
         self.info = None
 
     def open(self):
@@ -361,7 +375,7 @@ class OSD:
             self.conn.close()
             self.conn = None
 
-    def connect(self, force=False):
+    def connect(self, force: bool = False):
         '''Open the connection and retrieve OSD info'''
         if self.is_connected() and not force:
             return True
@@ -394,7 +408,7 @@ class OSD:
         data = char_data
         if self.trace:
             print('Uploading character {} {}'.format(char_addr, _format_payload(data)))
-        payload = struct.pack('<H', char_addr) + data
+        payload = pack('<H', char_addr) + data
         return self.send_frame_sync_resp(CMD.WRITE_FONT, payload)
 
     def upload_font(self, font, progress=None):
@@ -430,22 +444,22 @@ class OSD:
         '''Flash a compatible firmware file'''
         if not no_reboot:
             self.reboot(True)
-            time.sleep(1)
+            sleep(1)
         self.flash_firmware_bl(f, progress)
 
     def erase_firmware(self, no_reboot=False):
         '''Erase firmware from the device (will need an update applied to work)'''
         if not no_reboot:
             self.reboot(True)
-            time.sleep(1)
-        payload = struct.pack('<L', 0)
+            sleep(1)
+        payload = pack('<L', 0)
         resp = self.send_frame_sync_resp(CMD.WRITE_FLASH, payload)
         self._ensure_write_flash_response(resp, 0)
         self._flash_finish()
 
     def _flash_finish(self, allow_workaround=False):
         # Signal flash end
-        payload = struct.pack('<L', FLASH_WRITE_END)
+        payload = pack('<L', FLASH_WRITE_END)
         resp = self.send_frame_sync_resp(CMD.WRITE_FLASH, payload)
         self._ensure_write_flash_response(resp, 0, allow_workaround=allow_workaround)
         # Reboot
@@ -460,7 +474,7 @@ class OSD:
             sz = FLASH_WRITE_MAX_BLOCK_SIZE if len(rem) > FLASH_WRITE_MAX_BLOCK_SIZE else len(rem)
             chunk = rem[:sz]
             rem = rem[sz:]
-            payload = struct.pack('<L', addr) + chunk
+            payload = pack('<L', addr) + chunk
             addr += sz
             resp = self.send_frame_sync_resp(CMD.WRITE_FLASH, payload)
             self._ensure_write_flash_response(resp, addr, allow_workaround=_ALLOW_WORKAROUND and len(rem) == 0)
@@ -471,7 +485,7 @@ class OSD:
 
         self._flash_finish(allow_workaround=_ALLOW_WORKAROUND)
 
-    def reboot(self, to_bootloader=False):
+    def reboot(self, to_bootloader: bool = False):
         '''Perform an OSD reboot, optionally staying into BL mode'''
         payload = [1 if to_bootloader else 0]
         self.send_frame(CMD.REBOOT, payload)
@@ -484,8 +498,8 @@ class OSD:
 
     # Transactions
 
-    def transaction_begin(self, profile_at=None):
-        profile_at = profile_at = self.profile_at
+    def transaction_begin(self, profile_at: Any = None):
+        profile_at = self.profile_at
         if profile_at:
             payload = self._pack_point(profile_at[0], profile_at[1])
             self.send_frame(CMD.TRANSACTION_BEGIN_PROFILED, payload)
@@ -514,7 +528,7 @@ class OSD:
             payload = self._pack_u24(val)
         else:
             cmd = CMD.DRAW_GRID_CHR
-            payload = struct.pack('<BBHB', gx, gy, c, opts)
+            payload = pack('<BBHB', gx, gy, c, opts)
         return self.send_frame(cmd, payload)
 
     def draw_grid_str(self, gx, gy, s, opts=None):
@@ -534,54 +548,54 @@ class OSD:
                 payload = header + self._pack_str(s, null_terminated=False)
         else:
             cmd = CMD.DRAW_GRID_STR
-            header = struct.pack('<BBB', gx, gy, opts or 0)
+            header = pack('<BBB', gx, gy, opts or 0)
             payload = header + self._pack_str(s)
         return self.send_frame(cmd, payload)
 
-    def set_stroke_color(self, color):
+    def set_stroke_color(self, color: COLOR):
         payload = self._pack_color(color)
         return self.send_frame(CMD.SET_STROKE_COLOR, payload)
 
-    def set_fill_color(self, color):
+    def set_fill_color(self, color: COLOR):
         payload = self._pack_color(color)
         return self.send_frame(CMD.SET_FILL_COLOR, payload)
 
-    def set_stroke_and_fill_color(self, color):
+    def set_stroke_and_fill_color(self, color: COLOR):
         payload = self._pack_color(color)
         return self.send_frame(CMD.SET_STROKE_AND_FILL_COLOR, payload)
 
-    def set_color_inversion(self, invert):
+    def set_color_inversion(self, invert: bool):
         payload = self._pack_u8(1 if invert else 0)
         return self.send_frame(CMD.SET_COLOR_INVERSION, payload)
 
-    def set_pixel(self, x, y, color):
+    def set_pixel(self, x: int | float, y: int | float, color: COLOR):
         payload = self._pack_point(x, y) + self._pack_color(color)
         return self.send_frame(CMD.SET_PIXEL, payload)
 
-    def set_pixel_to_stroke_color(self, x, y):
+    def set_pixel_to_stroke_color(self, x: int | float, y: int | float):
         payload = self._pack_point(x, y)
         return self.send_frame(CMD.SET_PIXEL_TO_STROKE_COLOR, payload)
 
-    def set_pixel_to_fill_color(self, x, y):
+    def set_pixel_to_fill_color(self, x: int | float, y: int | float):
         payload = self._pack_point(x, y)
         return self.send_frame(CMD.SET_PIXEL_TO_FILL_COLOR, payload)
 
-    def set_stroke_width(self, w):
+    def set_stroke_width(self, w: int):
         payload = self._pack_u8(w)
         return self.send_frame(CMD.SET_STROKE_WIDTH, payload)
 
-    def set_line_outline_type(self, ot):
+    def set_line_outline_type(self, ot: OUTLINE):
         if ot < OUTLINE.NONE or ot > OUTLINE.LEFT:
             raise ValueError("Invalid outline type %d" % ot)
 
         payload = self._pack_u8(ot)
         return self.send_frame(CMD.SET_LINE_OUTLINE_TYPE, payload)
 
-    def set_line_outline_color(self, color):
+    def set_line_outline_color(self, color: COLOR):
         payload = self._pack_color(color)
         return self.send_frame(CMD.SET_LINE_OUTLINE_COLOR, payload)
 
-    def clip_to_rect(self, rect):
+    def clip_to_rect(self, rect: Sequence[int | float]):
         payload = self._pack_rect(rect)
         return self.send_frame(CMD.CLIP_TO_RECT, payload)
 
@@ -589,7 +603,7 @@ class OSD:
         '''Clear the whole screen'''
         return self.send_frame(CMD.CLEAR_SCREEN)
 
-    def clear_rect(self, rect):
+    def clear_rect(self, rect: Sequence[int | float]):
         '''Clear a rect given as (x, y, w, h)'''
         payload = self._pack_rect(rect)
         return self.send_frame(CMD.CLEAR_RECT, payload)
@@ -597,81 +611,81 @@ class OSD:
     def drawing_reset(self):
         return self.send_frame(CMD.DRAWING_RESET)
 
-    def draw_bitmap(self, rect, bitmap, opts=None):
+    def draw_bitmap(self, rect, bitmap, opts: Any = None):
         # TODO
         pass
 
-    def draw_bitmap_mask(self, rect, bitmap, color, opts=None):
+    def draw_bitmap_mask(self, rect: Sequence[int | float], bitmap, color: COLOR, opts: Any = None):
         # TODO
         pass
 
-    def draw_chr(self, x, y, ch, opts=None):
+    def draw_chr(self, x: int | float, y: int | float, ch: int | str, opts: Any = None):
         c = ch
         if isinstance(c, str):
             c = ord(c[0])
-        payload = self._pack_point(x, y) + struct.pack('<HB', int(c), (opts or 0))
+        payload = self._pack_point(x, y) + pack('<HB', int(c), (opts or 0))
         return self.send_frame(CMD.DRAW_CHAR, payload)
 
-    def draw_chr_mask(self, x, y, ch, color, opts=None):
+    def draw_chr_mask(self, x: int | float, y: int | float, ch: int | str, color: COLOR, opts: Any = None):
         c = ch
         if isinstance(c, str):
             c = ord(c[0])
-        payload = self._pack_point(x, y) + struct.pack('<HBB', int(c), opts or 0, color)
+        payload = self._pack_point(x, y) + pack('<HBB', int(c), opts or 0, color)
         return self.send_frame(CMD.DRAW_CHAR_MASK, payload)
 
-    def draw_str(self, x, y, s, opts=None):
+    def draw_str(self, x: int | float, y: int | float, s: str, opts: Any = None):
         self._pack_point(x, y)
-        header = self._pack_point(x, y) + struct.pack('<B', opts or 0)
+        header = self._pack_point(x, y) + pack('<B', opts or 0)
         payload = header + self._pack_str(s)
         return self.send_frame(CMD.DRAW_STRING, payload)
 
-    def draw_str_mask(self, x, y, s, color, opts=None):
+    def draw_str_mask(self, x: int | float, y: int | float, s: str, color: COLOR, opts: Any = None):
         self._pack_point(x, y)
-        header = self._pack_point(x, y) + struct.pack('<BB', opts or 0, color)
+        header = self._pack_point(x, y) + pack('<BB', opts or 0, color)
         payload = header + self._pack_str(s)
         return self.send_frame(CMD.DRAW_STRING_MASK, payload)
 
-    def move_to_point(self, x, y):
+    def move_to_point(self, x: int | float, y: int | float):
         payload = self._pack_point(x, y)
         return self.send_frame(CMD.MOVE_TO_POINT, payload)
 
-    def stroke_line_to_point(self, x, y):
+    def stroke_line_to_point(self, x: int | float, y: int | float):
         payload = self._pack_point(x, y)
         return self.send_frame(CMD.STROKE_LINE_TO_POINT, payload)
 
-    def stroke_triangle(self, p1, p2, p3):
+    def stroke_triangle(self, p1: Sequence[int | float], p2: Sequence[int | float], p3: Sequence[int | float]):
         payload = self._pack_point(p1[0], p1[1]) + self._pack_point(p2[0], p2[1]) + self._pack_point(p3[0], p3[1])
         return self.send_frame(CMD.STROKE_TRIANGLE, payload)
 
-    def fill_triangle(self, p1, p2, p3):
+    def fill_triangle(self, p1: Sequence[int | float], p2: Sequence[int | float], p3: Sequence[int | float]):
         payload = self._pack_point(p1[0], p1[1]) + self._pack_point(p2[0], p2[1]) + self._pack_point(p3[0], p3[1])
         return self.send_frame(CMD.FILL_TRIANGLE, payload)
 
-    def fill_stroke_triangle(self, p1, p2, p3):
+    def fill_stroke_triangle(self, p1: Sequence[int | float], p2: Sequence[int | float], p3: Sequence[int | float]):
         payload = self._pack_point(p1[0], p1[1]) + self._pack_point(p2[0], p2[1]) + self._pack_point(p3[0], p3[1])
         return self.send_frame(CMD.FILL_STROKE_TRIANGLE, payload)
 
-    def stroke_rect(self, r):
+    def stroke_rect(self, r: Sequence[int | float]):
         payload = self._pack_rect(r)
         return self.send_frame(CMD.STROKE_RECT, payload)
 
-    def fill_rect(self, r):
+    def fill_rect(self, r: Sequence[int | float]):
         payload = self._pack_rect(r)
         return self.send_frame(CMD.FILL_RECT, payload)
 
-    def fill_stroke_rect(self, r):
+    def fill_stroke_rect(self, r: Sequence[int | float]):
         payload = self._pack_rect(r)
         return self.send_frame(CMD.FILL_STROKE_RECT, payload)
 
-    def stroke_ellipse_in_rect(self, r):
+    def stroke_ellipse_in_rect(self, r: Sequence[int | float]):
         payload = self._pack_rect(r)
         return self.send_frame(CMD.STROKE_ELLIPSE_IN_RECT, payload)
 
-    def fill_ellipse_in_rect(self, r):
+    def fill_ellipse_in_rect(self, r: Sequence[int | float]):
         payload = self._pack_rect(r)
         return self.send_frame(CMD.FILL_ELLIPSE_IN_RECT, payload)
 
-    def fill_stroke_ellipse_in_rect(self, r):
+    def fill_stroke_ellipse_in_rect(self, r: Sequence[int | float]):
         payload = self._pack_rect(r)
         return self.send_frame(CMD.FILL_STROKE_ELLIPSE_IN_RECT, payload)
 
@@ -681,23 +695,23 @@ class OSD:
         self.send_frame(CMD.CTM_RESET)
 
     def ctm_set(self, m11, m12, m21, m22, m31, m32):
-        payload = struct.pack('<ffffff', m11, m12, m21, m22, m31, m32)
+        payload = pack('<ffffff', m11, m12, m21, m22, m31, m32)
         return self.send_frame(CMD.CTM_SET, payload)
 
     def ctm_translate(self, tx, ty):
-        payload = struct.pack('<ff', tx, ty)
+        payload = pack('<ff', tx, ty)
         return self.send_frame(CMD.CTM_TRANSLATE, payload)
 
     def ctm_translate_rev(self, tx, ty):
-        payload = struct.pack('<ff', tx, ty)
+        payload = pack('<ff', tx, ty)
         return self.send_frame(CMD.CTM_TRANSLATE_REV, payload)
 
     def ctm_scale(self, sx, sy):
-        payload = struct.pack('<ff', sx, sy)
+        payload = pack('<ff', sx, sy)
         return self.send_frame(CMD.CTM_SCALE, payload)
 
     def ctm_rotate(self, r):
-        payload = struct.pack('<f', r)
+        payload = pack('<f', r)
         return self.send_frame(CMD.CTM_ROTATE, payload)
 
     # Context
@@ -717,17 +731,17 @@ class OSD:
         return wid
 
     def _widget_set_config(self, wid, config):
-        payload = struct.pack('<B', wid) + config
+        payload = pack('<B', wid) + config
         resp = self.send_frame_sync_resp(CMD.WIDGET_SET_CONFIG, payload)
         if isinstance(resp, ResponseError):
             raise RemoteResponseError(resp, 'error configuring widget {}: {}'.format(wid, resp.error_code))
 
     def _widget_draw(self, wid, data):
-        payload = struct.pack('<B', wid) + data
+        payload = pack('<B', wid) + data
         return self.send_frame(CMD.WIDGET_DRAW, payload)
 
     def widget_ahi_set_config(self, r, style, crosshair_margin, stroke_width=1, options=0):
-        config = self._pack_rect(r) + struct.pack('<BBBB', style, options, crosshair_margin, stroke_width)
+        config = self._pack_rect(r) + pack('<BBBB', style, options, crosshair_margin, stroke_width)
         return self._widget_set_config(WIDGETS.AHI, config)
 
     def widget_ahi_draw(self, pitch, roll):
@@ -736,7 +750,7 @@ class OSD:
 
     def widget_sidebar_set_config(self, idx, r, options, divisions, per_division, unit):
         wid = self._map_wid(idx, WIDGETS.SIDEBAR_0, WIDGETS.SIDEBAR_1)
-        config = self._pack_rect(r) + struct.pack('<BBH', options, divisions, per_division) + self._pack_unit(unit)
+        config = self._pack_rect(r) + pack('<BBH', options, divisions, per_division) + self._pack_unit(unit)
         return self._widget_set_config(wid, config)
 
     def widget_sidebar_draw(self, idx, value):
@@ -748,7 +762,7 @@ class OSD:
         wid = self._map_wid(idx, WIDGETS.GRAPH_0, WIDGETS.GRAPH_3)
         options = options or 0
         initial_scale = initial_scale or 0
-        config = self._pack_rect(r) + struct.pack('<BBBB', options, nlabels, label_width, initial_scale) + self._pack_unit(unit)
+        config = self._pack_rect(r) + pack('<BBBB', options, nlabels, label_width, initial_scale) + self._pack_unit(unit)
         return self._widget_set_config(wid, config)
 
     def widget_graph_draw(self, idx, value):
@@ -761,7 +775,7 @@ class OSD:
         resp = self.send_frame_sync_resp(CMD.VM_STORAGE_SIZE)
         if isinstance(resp, ResponseError):
             raise RemoteResponseError(resp, 'error retrieving storage size: {}'.format(resp.error_code))
-        size = struct.unpack('<L', resp.payload)[0]
+        size = unpack('<L', resp.payload)[0]
         return size
 
     def _vm_storage_header_size(self):
@@ -771,12 +785,12 @@ class OSD:
         return 64
 
     def _pack_upload_blob(self, offset, blob):
-        return struct.pack('<L', offset) + self._pack_blob(blob)
+        return pack('<L', offset) + self._pack_blob(blob)
 
     def _upload_resp_offset(self, resp):
         if isinstance(resp, ResponseError):
             raise RemoteResponseError(resp, 'error retrieving next offset to upload: {}'.format(resp.error_code))
-        return struct.unpack('<L', resp.payload)[0]
+        return unpack('<L', resp.payload)[0]
 
     def upload_program(self, f):
         data = f.read()
@@ -786,7 +800,7 @@ class OSD:
         if len(data) > max_size:
             raise ValueError('can\'t upload program of {} bytes, maximum size is {}'.format(len(data), max_size))
         crc = self._crc32_ieee(data)
-        blob = struct.pack('<LL', total_size, crc)
+        blob = pack('<LL', total_size, crc)
         payload = self._pack_upload_blob(0, blob)
         resp = self.send_frame_sync_resp(CMD.VM_STORAGE_WRITE, payload)
         offset = self._upload_resp_offset(resp)
@@ -803,16 +817,16 @@ class OSD:
     def download_program(self, f):
         # Read the header
         header_size = self._vm_storage_header_size()
-        payload = struct.pack('<LL', 0, header_size)
+        payload = pack('<LL', 0, header_size)
         resp = self.send_frame_sync_resp(CMD.VM_STORAGE_READ, payload)
-        size, crc = struct.unpack('<LL', resp.payload)
+        size, crc = unpack('<LL', resp.payload)
         if size > self._vm_storage_size():
             raise RuntimeError('no valid data found in the vm storage')
         rem = size - header_size
         offset = header_size
         while rem > 0:
             s = min(self._vm_max_transfer_block_size(), rem)
-            payload = struct.pack('<LL', offset, s)
+            payload = pack('<LL', offset, s)
             resp = self.send_frame_sync_resp(CMD.VM_STORAGE_READ, payload)
             f.write(resp.payload)
             offset += s
@@ -822,7 +836,7 @@ class OSD:
         resp = self.send_frame_sync_resp(CMD.VM_START)
         if isinstance(resp, ResponseError):
             raise RemoteResponseError(resp, 'error starting program: {}'.format(resp.error_code))
-        return struct.unpack('<L', resp.payload)[0]
+        return unpack('<L', resp.payload)[0]
 
     def run_program(self, f):
         try:
@@ -839,7 +853,7 @@ class OSD:
         resp = self.send_frame_sync_resp(CMD.VM_LOOKUP_SYMBOL, payload)
         if isinstance(resp, ResponseError):
             raise RemoteResponseError(resp, 'error looking up symbol "{}": {}'.format(name, resp.error_code))
-        return struct.unpack('<h', resp.payload)[0]
+        return unpack('<h', resp.payload)[0]
 
     def run_function(self, name, args=None, reply=True):
         args = args or []
@@ -848,7 +862,7 @@ class OSD:
         payload = self._pack_uvarint(sym)
         payload += self._pack_uvarint(len(args))
         for item in args:
-            if isinstance(item, str if sys.version_info[0] >= 3 else basestring):
+            if isinstance(item, str if version_info[0] >= 3 else basestring):
                 if '.' in item:
                     item = float(item)
                 else:
@@ -856,15 +870,15 @@ class OSD:
             if type(item) is int:
                 payload += self._pack_u32(item)
             elif type(item) is float:
-                payload += struct.pack('<f', item)
+                payload += pack('<f', item)
             else:
                 raise ValueError('can\'t encode argument {} of type {}'.format(item, type(item)))
 
         if reply:
             resp = self.send_frame_sync_resp(CMD.VM_EXEC, payload)
-            return struct.unpack('<L', resp.payload)[0]
-        else:
-            self.send_frame(CMD.VM_EXEC, payload)
+            return unpack('<L', resp.payload)[0]
+        
+        self.send_frame(CMD.VM_EXEC, payload)
 
     # Raw frame handling
 
@@ -920,7 +934,7 @@ class OSD:
         dr = dr or BAUDRATE
         payload = self._pack_u32(dr)
         resp = self.send_frame_sync_resp(CMD.SET_DATA_RATE, payload)
-        new_dr = struct.unpack('<I', resp.payload)[0]
+        new_dr = unpack('<I', resp.payload)[0]
         if new_dr != self.baudrate:
             if self.trace:
                 print("changing baudrate from {} to {}".format(self.baudrate, new_dr))
@@ -977,9 +991,9 @@ class OSD:
         return resp and resp[0] != 0
 
     def _stop_msp_passthrough(self):
-        time.sleep(1)
+        sleep(1)
         self._conn_write(b'+++')
-        time.sleep(1)
+        sleep(1)
         self._conn_write(b'ATH')
 
     def _ensure_write_flash_response(self, resp, addr, allow_workaround=False):
@@ -993,43 +1007,43 @@ class OSD:
 
     # Pack/unpack
 
-    def _pack_u8(self, val):
-        return struct.pack('<B', val & 0xFF)
+    def _pack_u8(self, val: int):
+        return pack('<B', val & 0xFF)
 
-    def _pack_u16(self, val):
-        return struct.pack('<H', val)
+    def _pack_u16(self, val: int):
+        return pack('<H', val)
 
-    def _pack_i24(self, val):
-        return struct.pack('<i', val)[:3]
+    def _pack_i24(self, val: int):
+        return pack('<i', val)[:3]
 
-    def _pack_u24(self, val):
+    def _pack_u24(self, val: int):
         return self._pack_u32(val)[:3]
 
-    def _pack_u32(self, val):
-        return struct.pack('<I', val)
+    def _pack_u32(self, val: int):
+        return pack('<I', val)
 
-    def _pack_color(self, color):
+    def _pack_color(self, color: COLOR):
         if color < COLOR._MIN or color > COLOR._MAX:
             raise RuntimeError("Invalid color %d" % color)
         return self._pack_u8(color)
 
-    def _pack_coord(self, c):
+    def _pack_coord(self, c: int | float) -> int:
         i = int(c)
         if i < 0:
             i += 1 << 32
         return i & 0xfff
 
-    def _pack_point(self, x, y):
-        return struct.pack('<L', self._pack_coord(y) << 12 | self._pack_coord(x))[:3]
+    def _pack_point(self, x: int | float, y: int | float) -> bytes:
+        return pack('<L', self._pack_coord(y) << 12 | self._pack_coord(x))[:3]
 
-    def _pack_size(self, w, h):
+    def _pack_size(self, w: int | float, h: int | float):
         return self._pack_point(w, h)
 
-    def _pack_rect(self, r):
+    def _pack_rect(self, r: Sequence[int | float]):
         x, y, w, h = r
         return self._pack_point(x, y) + self._pack_size(w, h)
 
-    def _pack_uvarint(self, x):
+    def _pack_uvarint(self, x: int):
         data = bytearray()
         while x >= 0x80:
             data.append((x & 0xFF) | 0x80)
@@ -1037,11 +1051,11 @@ class OSD:
         data.append(x & 0xFF)
         return data
 
-    def _pack_blob(self, b):
+    def _pack_blob(self, b: bytes | bytearray):
         size = self._pack_uvarint(len(b))
         return size + b
 
-    def _pack_str(self, s, null_terminated=True):
+    def _pack_str(self, s: str, null_terminated: bool = True):
         b = _str_to_bytes(s)
         if null_terminated:
             b += _int_as_bytes(0)
@@ -1049,8 +1063,8 @@ class OSD:
 
     def _pack_unit(self, u):
         if u is None:
-            return struct.pack('<LL', 0, 0)
-        return struct.pack('<HHHH', u.scale, u.symbol, u.divisor, u.divided_symbol)
+            return pack('<LL', 0, 0)
+        return pack('<HHHH', u.scale, u.symbol, u.divisor, u.divided_symbol)
 
     def flush(self):
         self.flush_send_buffer()
@@ -1076,7 +1090,7 @@ class OSD:
         r = self.conn.read()
         b = r[0]
         if isinstance(b, str):
-            b = struct.unpack('B', b)[0]
+            b = unpack('B', b)[0]
         if self.trace:
             print('R<< {0}\t({0:#04x} = {1!r})'.format(b, chr(b)))
         return b
@@ -1090,7 +1104,7 @@ class OSD:
         print("Unexpected marker {} ({}), expecting {}".format(chr(b), b, mk))
         return False
 
-    def _conn_write(self, b):
+    def _conn_write(self, b: int | bytes):
         if not isinstance(b, bytes):
             b = _int_as_bytes(b)
         if self.trace:
@@ -1112,12 +1126,15 @@ class OSD:
         # we need to convert to unsigned. For Python3
         # the modulus doesn't change the value since
         # by definition it's always < 1<<32
-        return binascii.crc32(data) % (1 << 32)
+        return crc32(data) % (1 << 32)
 
-if __name__ == '__main__':
-    import argparse
 
-    parser = argparse.ArgumentParser()
+
+if __name__ == "__main__":
+
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser()
     parser.add_argument('port', type=str, help='OSD port. Supports both path to serial port path or host:port')
     parser.add_argument('--debug', default=False, action='store_true', dest='debug', help='Print debugging information')
     parser.add_argument('--trace', default=False, action='store_true', dest='trace', help='Print all data sent/received')
