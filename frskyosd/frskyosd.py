@@ -1087,7 +1087,7 @@ class OSD:
         return crc
 
     def _recv_byte(self):
-        r = self.conn.read()
+        r = self.conn.read(1)
         b = r[0]
         if isinstance(b, str):
             b = unpack('B', b)[0]
