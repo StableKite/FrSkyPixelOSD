@@ -55,3 +55,7 @@ Invoke it without any arguments to see its help.
 SDK functions are named after their remote API functions and are
 roughly equivalent. Please, see the main documentation for an
 explanation of what each function does.
+
+# Info
+Archived. Will not be supported
+For StableKite team: use [pyfrskyosd](https://github.com/StableKite/pyfrskyosd) instead
